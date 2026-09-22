@@ -31,6 +31,18 @@ TOOLS = [
                         "type": "integer",
                         "description": "id региона из list_regions. Необязателен.",
                     },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Сколько элементов вернуть. По умолчанию 40."
+                    },
+                    "offset": {
+                        "type": "integer",
+                        "description": "Смещение для пагинации."
+                    },
+                    "query": {
+                        "type": "string",
+                        "description": "Фильтр по подстроке в тексте элемента. Необязателен."
+                    }
                 },
                 "required": [],
             },
@@ -80,8 +92,33 @@ TOOLS = [
     {
         "type": "function",
         "function": {
+            "name": "ask_user",
+            "description": (
+                "Задать уточняющий вопрос пользователю и дождаться ответа. "
+                "Используй, если без ответа не можешь продолжить: не знаешь URL, "
+                "непонятно, какой из нескольких вариантов выбрать, нужны учётные "
+                "данные и т.п."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {"question": {"type": "string"}},
+                "required": ["question"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "current_url",
+            "description": "Вызывай, когда надо проверить или убедиться, какой url сейчас открыт.",
+            "parameters": {},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "finish",
-            "description": "Вызови, когда задача полностью выполнена. Передай краткий итог того, что сделано.",
+            "description": "Вызови, когда задача выполнена. Передай краткий итог того, что сделано.",
             "parameters": {
                 "type": "object",
                 "properties": {"summary": {"type": "string"}},

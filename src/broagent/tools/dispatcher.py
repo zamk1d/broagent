@@ -1,6 +1,7 @@
 from broagent.page_control.collector import collect_elements, collect_regions
-from broagent.page_control.actions import click, type_text, goto
+from broagent.page_control.actions import click, type_text, goto, current_url
 from broagent.safety.confirm import is_dangerous, ask_user_confirmation
+from broagent import logging_utils as log
 
 
 class ToolDispatcher:
@@ -15,10 +16,24 @@ class ToolDispatcher:
 
         if name == "list_elements":
             region_id = args.get("region_id", None)
-            self._last_elements = collect_elements(self.page, region_id=region_id)
-            print(len(self._last_elements))
-            print(str(self._last_elements))
-            return str(self._last_elements)
+            elements = collect_elements(self.page, region_id=region_id)
+
+            query = (args.get("query") or "").lower()
+            if query:
+                elements = [el for el in elements if query in el["text"].lower()]
+
+            self._last_elements = elements
+
+            limit = int(args.get("limit") or 20)
+            offset = int(args.get("offset") or 0)
+            page_slice = elements[offset:offset + limit]
+
+            return str({
+                "total": len(elements),
+                "offset": offset,
+                "limit": limit,
+                "items": page_slice,
+            })
 
         if name == "click":
             element_id = args["element_id"]
@@ -28,13 +43,27 @@ class ToolDispatcher:
                 if not ask_user_confirmation("click", element_text):
                     return "Пользователь отклонил это действие. Выбери другой путь."
 
-            return click(self.page, element_id)
+            result = click(self.page, element_id)
+            self._last_elements = []      # DOM мог поменяться
+            return result
 
         if name == "type_text":
-            return type_text(self.page, args["element_id"], args["text"])
+            result = type_text(self.page, args["element_id"], args["text"])
+            self._last_elements = []      # могли появиться подсказки/фильтры
+            return result
 
         if name == "goto":
-            return goto(self.page, args["url"])
+            result = goto(self.page, args["url"])
+            self._last_elements = []
+            return result
+
+        if name == "ask_user":
+            answer = input(f"\n❓ {args['question']}\n> ")
+            return f"Ответ пользователя: {answer}"
+
+        if name == "current_url":
+            url = current_url(self.page)
+            return url
 
         return f"Неизвестный инструмент: {name}"
 

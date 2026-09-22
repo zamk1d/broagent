@@ -3,7 +3,11 @@ from playwright.sync_api import Page
 _COLLECT_JS = """
 (args) => {
     const { region_id } = args;
-
+    
+    document.querySelectorAll('[data-agent-id]').forEach(
+        (el) => el.removeAttribute('data-agent-id')
+    );
+    
     // если region_id не передан — ищем по всей странице, как раньше;
     // если передан — сначала находим регион и ищем только внутри него
     const root = region_id === null

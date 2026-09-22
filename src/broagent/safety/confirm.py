@@ -1,3 +1,5 @@
+from broagent import logging_utils as log
+
 DANGEROUS_WORDS = [
     "оплатить", "купить", "удалить", "подтвердить заказ",
     "delete", "pay", "confirm order", "checkout", "purchase",
@@ -12,8 +14,17 @@ def is_dangerous(action_name: str, element_text: str) -> bool:
 
 
 def ask_user_confirmation(action_name: str, element_text: str) -> bool:
-    answer = input(
-        f"\n⚠️  Агент хочет выполнить '{action_name}' по элементу "
-        f"с текстом '{element_text}'. Разрешить? (y/n): "
+    log.warn(
+        f"Агент хочет выполнить '{action_name}' по элементу: «{element_text}»"
     )
+    answer = input(_prompt())
     return answer.strip().lower() == "y"
+
+
+def _prompt() -> str:
+    # отдельная функция, чтобы цвет можно было отключить одним движением
+    try:
+        from broagent.logging_utils import _paint, C
+        return _paint("    Разрешить? (y/n): ", C.BOLD, C.YELLOW)
+    except Exception:
+        return "    Разрешить? (y/n): "

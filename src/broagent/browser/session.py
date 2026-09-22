@@ -13,6 +13,8 @@ class BrowserSession:
         self._context = self._playwright.chromium.launch_persistent_context(
             self.profile_dir,
             headless=False,
+            args=["--start-maximized"],
+            no_viewport=True
         )
         self.page = self._context.new_page()
         return self.page
