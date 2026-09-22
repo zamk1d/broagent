@@ -4,3 +4,4 @@ sand.py
 .venv/
 .idea/
 *.pycache
+__pycache__/
