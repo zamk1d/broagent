@@ -1,0 +1,6 @@
+profile/
+.env
+sand.py
+.venv/
+.idea/
+*.pycache

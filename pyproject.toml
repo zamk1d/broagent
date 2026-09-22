@@ -1,0 +1,10 @@
+[project]
+name = "broagent"
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = [
+    "anthropic>=1.7.0",
+    "openai>=3.16.2",
+    "playwright>=1.63.0",
+    "python-dotenv>=1.2.3",
+]
