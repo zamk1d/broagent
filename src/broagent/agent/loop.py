@@ -1,192 +1,182 @@
-import json
 import time
 
-from broagent.agent.llm_client import ask_model, ModelToolCallError
-from broagent.tools.schemas import TOOLS
-from broagent.tools.dispatcher import ToolDispatcher
-from broagent import logging_utils as log
+from .. import config
+from .. import logging_utils as log
+from ..tools.schemas import TOOLS
+from ..tools.dispatcher import ToolDispatcher
+from .llm_client import ask_model
 
-MAX_TOOL_HISTORY = 5          # сколько последних tool-результатов хранить целиком
-TRUNCATE_AT = 1500
-MAX_STEPS = 25
+MAX_TOOL_RESULT_HISTORY = 4
+TRUNCATE_AT = 700
 
-INSTRUCTION = (
+SYSTEM_PROMPT = (
     "Ты — браузерный ассистент. Твоя задача — выполнять поручения пользователя, "
     "управляя реальным браузером через инструменты. Ты универсален: работаешь "
     "с любым сайтом, любой страницей, любой задачей. Не предполагай заранее, "
-    "как устроен сайт — смотри на то, что реально на странице.\n"
-    "\n"
-    "ИНСТРУМЕНТЫ:\n"
-    "- goto(url) — перейти на страницу.\n"
-    "- list_regions() — крупные блоки текущей страницы (header/main/footer/...).\n"
-    "- list_elements(region_id, query, limit, offset) — интерактивные элементы "
-    "(ссылки, кнопки, поля) с их id и текстом.\n"
-    "- click(element_id) — кликнуть по элементу.\n"
-    "- type_text(element_id, text) — ввести текст в поле.\n"
-    "- finish(summary) — завершить задачу с кратким итогом.\n"
-    "Используй ТОЛЬКО эти имена. Никаких 'commentary', 'analysis', 'final', "
-    "'browse', 'search' и подобных выдуманных инструментов не существует.\n"
+    "как устроен сайт, какие у него адреса страниц или тексты кнопок — смотри "
+    "на то, что реально отображается, через list_regions/list_elements/read_text.\n"
     "\n"
     "ОБЩИЙ ПОРЯДОК РАБОТЫ:\n"
-    "1. Пойми, что именно просит пользователь: найти информацию, что-то нажать, "
-    "заполнить форму, сравнить, собрать список, зайти на конкретный сайт.\n"
-    "2. Реши, с какой страницы начать. Если пользователь не указал URL, "
-    "а задача похожа на поиск в интернете — начни с поисковика или известного "
-    "сайта по теме. Если не знаешь точно — не выдумывай URL, лучше спроси "
-    "пользователя через finish.\n"
-    "3. Открой страницу через goto.\n"
-    "4. Осмотрись: на больших страницах сначала list_regions, потом list_elements "
-    "с region_id нужного блока. На маленьких можно сразу list_elements.\n"
-    "5. Действуй по одному шагу: клик, ввод, переход. После каждого действия "
-    "проверяй результат.\n"
-    "6. Когда задача выполнена — вызови finish с конкретным итогом "
-    "(что нашёл, что сделал, что получилось).\n"
+    "1. Пойми, что именно просит пользователь.\n"
+    "2. Если пользователь не указал URL и задача похожа на поиск — начни "
+    "с известного релевантного сайта или поисковика. Если совсем не знаешь, "
+    "с чего начать — спроси через ask_user, не выдумывай URL наугад.\n"
+    "3. После goto/click страница могла ещё не дорендериться — если "
+    "list_elements или list_regions вернули пусто, попробуй тот же вызов ещё "
+    "раз перед тем как менять стратегию: часто это просто SPA, которой нужно "
+    "чуть больше времени, а не то, что сайт пустой.\n"
+    "4. На больших страницах сначала list_regions, потом list_elements с "
+    "region_id нужного блока. Если задача — «прочитай/найди информацию», "
+    "используй read_text вместо перебора кнопок.\n"
+    "5. Действуй по одному шагу и проверяй результат. id элементов валидны "
+    "только для текущего состояния DOM — после click/goto/type_text вызывай "
+    "list_elements заново, прежде чем ссылаться на id.\n"
+    "6. После клика по кнопкам вида «Найти», «Отправить», «Продолжить», "
+    "«Купить» — НЕ считай действие успешным просто потому, что не было "
+    "исключения. Результат click сам покажет предупреждение, если страница "
+    "его показала; если сомневаешься, что реально произошло — спроси "
+    "ask_page («форма отправилась? есть ли ошибка валидации?»), прежде чем "
+    "искать обходной путь. Часто «ничего не изменилось» значит не «сайт "
+    "сломан», а «не заполнено обязательное поле».\n"
+    "7. Если задача — «найди / покажи список» — обычно не нужно открывать "
+    "каждую ссылку, собери нужное и вызови finish. Открывать детали нужно, "
+    "только если пользователь явно просит.\n"
+    "8. Если сайт использует бесконечную прокрутку и нужного не видно — "
+    "scroll_page, потом list_elements заново.\n"
+    "9. Опасные действия (оплата, удаление, отправка заказа) потребуют "
+    "подтверждения у пользователя — это происходит автоматически внутри "
+    "click/type_text, просто вызывай их как обычно.\n"
     "\n"
-    "ПРАВИЛА РАБОТЫ С ЭЛЕМЕНТАМИ:\n"
-    "- id элементов валидны только для текущего состояния страницы. После "
-    "click/goto/type_text страница могла измениться — вызови list_elements заново, "
-    "прежде чем ссылаться на id.\n"
-    "- Не кликай по элементу, если не понимаешь, что он делает. Сначала читай текст.\n"
-    "- Если в списке несколько похожих элементов — используй query в list_elements, "
-    "чтобы отфильтровать нужные, вместо того чтобы угадывать по id.\n"
-    "- Если задача — «найди / покажи список / какие есть», обычно НЕ нужно "
-    "открывать каждую найденную ссылку. Собери заголовки и вызови finish. "
-    "Переходить внутрь нужно только если пользователь явно просит «открой», "
-    "«посмотри детали», «откликнись» и т.п.\n"
-    "- Опасные действия (оплата, удаление, подтверждение заказа) требуют "
-    "подтверждения пользователя — это делается автоматически, но не пытайся "
-    "обходить запрос на подтверждение.\n"
+    "ask_page — саб-агент, который смотрит на страницу целиком (скриншот "
+    "и/или текст) и коротко отвечает на конкретный вопрос о её состоянии. "
+    "Используй его вместо повторных list_elements, когда тебе нужен не "
+    "список кнопок, а понимание, что сейчас происходит на странице.\n"
     "\n"
-    "ПРАВИЛА ЭКОНОМИИ И ТОЧНОСТИ:\n"
-    "- Не запрашивай всю страницу целиком, если задача локальная. Используй "
-    "region_id, query, limit, offset, чтобы получать только нужное.\n"
-    "- Не повторяй один и тот же вызов с теми же аргументами, если результат "
-    "не изменился. Если предыдущий шаг не дал результата — попробуй другой "
-    "подход, а не копируй его.\n"
-    "- Если инструмент вернул ошибку — прочитай её, пойми причину и попробуй "
-    "иначе, а не вызывай тот же инструмент с теми же аргументами.\n"
-    "- Если ты не уверен, что делать дальше — сформулируй промежуточный вывод "
-    "и вызови finish с пояснением, что удалось и где застрял. Не заканчивай "
-    "работу пустым сообщением.\n"
+    "ЭКОНОМИЯ: не запрашивай данные, которые тебе не нужны, используй limit/"
+    "offset/query/region_id. Не повторяй один и тот же вызов с теми же "
+    "аргументами, если результат не менялся — если инструмент вернул ошибку "
+    "или пустоту второй раз подряд, попробуй другой подход.\n"
     "\n"
-    "ЗАВЕРШЕНИЕ:\n"
-    "- Задача считается выполненной, когда пользователь получил то, что просил, "
-    "или когда дальше двигаться некуда.\n"
-    "- Всегда завершай через finish с конкретным итогом, а не просто текстом.\n"
-    "- В summary пиши результат по существу: что нашёл, что сделал, какие данные "
-    "получил. Не пересказывай шаги, не пиши «я вызвал list_elements».\n"
+    "ЗАВЕРШЕНИЕ: всегда завершай через finish с конкретным итогом по существу "
+    "(что нашёл/сделал/какие данные получил), а не пересказом шагов."
 )
 
 
-def _trim_history(messages: list):
-    """Оставляем нетронутыми последние N tool-сообщений, остальные урезаем.
+def _new_history() -> list:
+    return []
 
-    messages содержит и dict'ы (system/user/tool), и объекты ChatCompletionMessage
-    (ответы модели), поэтому работаем через универсальный доступ к полям.
-    """
-    def role_of(m):
-        if isinstance(m, dict):
-            return m.get("role")
-        return getattr(m, "role", None)
 
-    tool_indices = [i for i, m in enumerate(messages) if role_of(m) == "tool"]
-    if len(tool_indices) <= MAX_TOOL_HISTORY:
-        return
-    for i in tool_indices[:-MAX_TOOL_HISTORY]:
-        if not isinstance(messages[i], dict):
+def _truncate_old_tool_results(messages: list):
+    tool_result_positions = []
+    for msg_idx, msg in enumerate(messages):
+        if msg.get("role") != "user":
             continue
-        content = messages[i].get("content", "")
-        if len(content) > TRUNCATE_AT:
-            messages[i]["content"] = content[:TRUNCATE_AT] + "... [история обрезана]"
+        for block_idx, block in enumerate(msg.get("content", [])):
+            if isinstance(block, dict) and block.get("type") == "tool_result":
+                tool_result_positions.append((msg_idx, block_idx))
 
-def run_agent(page, task: str):
-    dispatcher = ToolDispatcher(page)
-    messages = [
-        {"role": "system", "content": INSTRUCTION},
-        {"role": "user", "content": task},
-    ]
+    if len(tool_result_positions) <= MAX_TOOL_RESULT_HISTORY:
+        return
 
-    log.banner("Запуск агента")
-    log.user_input(task)
+    for msg_idx, block_idx in tool_result_positions[:-MAX_TOOL_RESULT_HISTORY]:
+        block = messages[msg_idx]["content"][block_idx]
+        content = block.get("content", "")
+        if isinstance(content, str) and len(content) > TRUNCATE_AT:
+            block["content"] = content[:TRUNCATE_AT] + "… [история обрезана]"
+
+
+def run_agent(session, task: str, history: list | None = None) -> tuple[str | None, list]:
+    dispatcher = ToolDispatcher(session)
+    messages = history if history is not None else _new_history()
+    messages.append({"role": "user", "content": [{"type": "text", "text": task}]})
+
     empty_strikes = 0
-    for step_idx in range(MAX_STEPS):
-        step_num = step_idx + 1
-        log.step(step_num, MAX_STEPS)
-        _trim_history(messages)
-        log.llm_request(step_num, messages, len(TOOLS))
 
-        t0 = time.time()
-        try:
-            message = ask_model(messages, TOOLS)
-        except ModelToolCallError as e:
-            log.error(f"модель зовёт несуществующий инструмент '{e.bad_name}'")
-            if e.failed_generation:
-                log.info(f"сырой вывод модели: {e.failed_generation}")
-            return None
-        except Exception as e:
-            log.error(f"модель вернула ошибку: {e}")
-            return None
-        llm_ms = int((time.time() - t0) * 1000)
-        log.info(f"модель ответила за {llm_ms} ms")
+    try:
+        for step_idx in range(config.MAX_STEPS):
+            step_num = step_idx + 1
+            log.step_header(step_num, config.MAX_STEPS)
+            _truncate_old_tool_results(messages)
 
-        messages.append(message)
+            t0 = time.time()
+            try:
+                with log.thinking(step_num):
+                    response = ask_model(SYSTEM_PROMPT, messages, TOOLS)
+            except Exception as e:
+                log.error(f"провайдер модели вернул ошибку: {e}")
+                return None, messages
+            llm_ms = int((time.time() - t0) * 1000)
+            log.model_timing(llm_ms)
 
-        # Выход №1: модель ответила текстом без вызова инструментов.
-        if not message.tool_calls:
-            content = (message.content or "").strip()
-            if not content:
+            messages.append({"role": "assistant", "content": response["content"]})
+
+            text_parts = [b["text"] for b in response["content"] if b.get("type") == "text" and b.get("text", "").strip()]
+            tool_uses = [b for b in response["content"] if b.get("type") == "tool_use"]
+
+            if text_parts:
+                log.assistant_text("\n".join(text_parts))
+
+            if not tool_uses:
+                if text_parts:
+                    summary = "\n".join(text_parts)
+                    return summary, messages
                 empty_strikes += 1
                 log.warn(f"модель вернула пустой ответ ({empty_strikes}/3)")
                 if empty_strikes >= 3:
                     log.error("модель упорно молчит, останавливаюсь")
-                    return None
+                    return None, messages
                 messages.append({
-                    "role": "system",
-                    "content": (
-                        "Ты не вызвал ни одного инструмента и не написал ответ. "
-                        "Либо вызови подходящий инструмент, либо вызови finish "
-                        "с кратким итогом уже сделанного."
-                    ),
+                    "role": "user",
+                    "content": [{
+                        "type": "text",
+                        "text": "Ты не вызвал ни одного инструмента и не написал ответ. "
+                                "Либо вызови подходящий инструмент, либо вызови finish "
+                                "с кратким итогом уже сделанного.",
+                    }],
                 })
                 continue
-            log.llm_response_text(content)
-            log.final(content)
-            return content
 
-        log.llm_response_tool_calls(message.tool_calls)
+            tool_result_blocks = []
+            finished_summary = None
 
-        for tool_call in message.tool_calls:
-            name = tool_call.function.name
-            try:
-                args = json.loads(tool_call.function.arguments or "{}")
-            except json.JSONDecodeError as e:
-                log.tool_error(name, f"не удалось распарсить аргументы: {e}")
-                args = {}
+            for tool_use in tool_uses:
+                name = tool_use["name"]
+                args = tool_use.get("input") or {}
+                tool_use_id = tool_use["id"]
+                log.tool_call(name, args)
 
-            log.tool_call(name, args)
+                if name == "finish":
+                    finished_summary = args.get("summary", "")
+                    tool_result_blocks.append({
+                        "type": "tool_result",
+                        "tool_use_id": tool_use_id,
+                        "content": "задача завершена",
+                    })
+                    continue
 
-            # Выход №2: модель явно сообщила, что задача решена.
-            if name == "finish":
-                summary = args.get("summary")
-                log.final(summary)
-                return summary
+                t1 = time.time()
+                try:
+                    result = dispatcher.run(name, args)
+                except Exception as e:
+                    log.tool_error(name, e)
+                    result = f"Ошибка выполнения инструмента {name}: {e}"
+                tool_ms = int((time.time() - t1) * 1000)
+                log.tool_result(name, result, tool_ms)
 
-            t1 = time.time()
-            try:
-                result = dispatcher.run(name, args)
-            except Exception as e:
-                log.tool_error(name, e)
-                result = f"Ошибка выполнения инструмента {name}: {e}"
-            tool_ms = int((time.time() - t1) * 1000)
+                tool_result_blocks.append({
+                    "type": "tool_result",
+                    "tool_use_id": tool_use_id,
+                    "content": str(result),
+                })
 
-            log.tool_result(name, result, tool_ms)
+            messages.append({"role": "user", "content": tool_result_blocks})
 
-            messages.append({
-                "role": "tool",
-                "tool_call_id": tool_call.id,
-                "content": str(result),
-            })
+            if finished_summary is not None:
+                return finished_summary, messages
 
-    # Выход №3: исчерпан лимит шагов.
-    log.warn(f"Достигнут лимит в {MAX_STEPS} шагов, останавливаюсь.")
-    return None
+        log.warn(f"Достигнут лимит в {config.MAX_STEPS} шагов, останавливаюсь.")
+        return None, messages
+
+    except KeyboardInterrupt:
+        log.interrupted()
+        return None, messages

@@ -7,3 +7,4 @@ sand.py
 __pycache__/
 *.py[cod]
 *.egg-info/
+broagent.egg-info/

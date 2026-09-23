@@ -1,10 +1,14 @@
+README.md
 pyproject.toml
 src/broagent/__init__.py
+src/broagent/cli.py
+src/broagent/config.py
 src/broagent/logging_utils.py
 src/broagent/main.py
 src/broagent.egg-info/PKG-INFO
 src/broagent.egg-info/SOURCES.txt
 src/broagent.egg-info/dependency_links.txt
+src/broagent.egg-info/entry_points.txt
 src/broagent.egg-info/requires.txt
 src/broagent.egg-info/top_level.txt
 src/broagent/agent/__init__.py

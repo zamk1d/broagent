@@ -1,10 +1,22 @@
 [project]
 name = "broagent"
-version = "0.1.0"
-requires-python = ">=3.11"
+version = "0.2.0"
+description = "Autonomous browser-automation agent powered by Claude"
+requires-python = ">=3.10"
 dependencies = [
-    "anthropic>=1.7.0",
-    "openai>=3.16.2",
-    "playwright>=1.63.0",
-    "python-dotenv>=1.2.3",
+    "anthropic>=0.40.0",
+    "openai>=1.40.0",
+    "playwright>=1.47.0",
+    "python-dotenv>=1.0.0",
+    "rich>=13.7.0",
 ]
+
+[project.scripts]
+broagent = "broagent.cli:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
